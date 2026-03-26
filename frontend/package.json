@@ -12,27 +12,33 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "next": "14.1.0",
-    "react": "^18",
-    "react-dom": "^18",
     "@stellar/freighter-api": "^1.7.0",
     "@stellar/stellar-sdk": "^11.2.0",
-    "ethers": "^6.10.0",
+    "axios": "^1.6.5",
     "bitcoinjs-lib": "^6.1.5",
-    "axios": "^1.6.5"
+    "clsx": "^2.1.1",
+    "ethers": "^6.10.0",
+    "lucide-react": "^1.7.0",
+    "next": "14.1.0",
+    "next-themes": "^0.4.6",
+    "react": "^18",
+    "react-dom": "^18",
+    "sats-connect": "^4.2.1",
+    "tailwind-merge": "^3.5.0",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
-    "typescript": "^5",
+    "@types/bitcoinjs-lib": "^5.0.1",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "autoprefixer": "^10.4.17",
-    "postcss": "^8.4.33",
-    "tailwindcss": "^3.4.1",
     "eslint": "^8",
     "eslint-config-next": "14.1.0",
     "eslint-config-prettier": "^9.1.0",
+    "postcss": "^8.4.33",
     "prettier": "^3.2.5",
-    "@types/bitcoinjs-lib": "^5.0.1"
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5"
   }
 }
