@@ -14,6 +14,10 @@ pub fn create_order(
     to_amount: i128,
     expiry: u64,
 ) -> Result<u64, Error> {
+    if storage::is_paused(env) {
+        return Err(Error::Paused);
+    }
+
     if from_amount <= 0 || to_amount <= 0 {
         return Err(Error::InvalidAmount);
     }
@@ -44,6 +48,10 @@ pub fn create_order(
 }
 
 pub fn match_order(env: &Env, counterparty: &Address, order_id: u64) -> Result<u64, Error> {
+    if storage::is_paused(env) {
+        return Err(Error::Paused);
+    }
+
     let mut order = storage::read_order(env, order_id).ok_or(Error::OrderNotFound)?;
 
     if order.matched {
@@ -61,10 +69,26 @@ pub fn match_order(env: &Env, counterparty: &Address, order_id: u64) -> Result<u
 
     // Create cross-chain swap
     let swap_id = storage::increment_swap_counter(env);
+    let swap = crate::types::CrossChainSwap {
+        id: swap_id,
+        stellar_htlc_id: 0,
+        other_chain: order.from_chain.clone(),
+        other_chain_tx: String::from_slice(env, ""),
+        stellar_party: counterparty.clone(),
+        other_party: String::from_slice(env, ""),
+        state: crate::types::SwapState::Initiated,
+        updated_at: current_time,
+    };
+    storage::write_swap(env, swap_id, &swap);
+
     Ok(swap_id)
 }
 
 pub fn cancel_order(env: &Env, creator: &Address, order_id: u64) -> Result<(), Error> {
+    if storage::is_paused(env) {
+        return Err(Error::Paused);
+    }
+
     let order = storage::read_order(env, order_id).ok_or(Error::OrderNotFound)?;
 
     if order.creator != *creator {
