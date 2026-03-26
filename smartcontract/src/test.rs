@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::types::HashAlgorithm;
+use crate::types::{AdvancedOrderType, GovernanceConfig, HashAlgorithm, ProposalStatus, VoteChoice};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
     Address, Bytes, BytesN, Env, String,
@@ -1026,6 +1026,8 @@ fn test_partial_fill_order_stays_open() {
         &2000,
         &expiry,
         &250,
+        &AdvancedOrderType::Market,
+        &None,
     );
 
     client.match_order_partial(&counterparty, &order_id, &250);
@@ -1059,6 +1061,8 @@ fn test_partial_fill_multiple_fills_completes_order() {
         &2000,
         &expiry,
         &250,
+        &AdvancedOrderType::Market,
+        &None,
     );
 
     client.match_order_partial(&cp1, &order_id, &250);
@@ -1092,6 +1096,8 @@ fn test_partial_fill_below_min_fill_rejected() {
         &2000,
         &expiry,
         &250,
+        &AdvancedOrderType::Market,
+        &None,
     );
 
     // 249 < min_fill_amount (250)
@@ -1119,6 +1125,8 @@ fn test_partial_fill_above_remaining_rejected() {
         &2000,
         &expiry,
         &250,
+        &AdvancedOrderType::Market,
+        &None,
     );
 
     // 1001 > from_amount (1000)
@@ -1439,6 +1447,8 @@ fn test_multi_party_partial_fill() {
         &15000,
         &expiry,
         &200,
+        &AdvancedOrderType::Market,
+        &None,
     );
 
     for _ in 0..5 {
@@ -1586,4 +1596,104 @@ fn test_storage_metrics_reflect_open_orders() {
     let metrics_after = client.get_storage_metrics();
     assert_eq!(metrics_after.open_orders, 2);
     assert_eq!(metrics_after.total_orders, 3);
+}
+
+#[test]
+fn test_governance_proposal_lifecycle() {
+    let (env, _, client) = setup_contract();
+    let admin = Address::generate(&env);
+    let proposer = Address::generate(&env);
+    let voter = Address::generate(&env);
+
+    client.init(&admin);
+    client.init_governance(
+        &admin,
+        &GovernanceConfig {
+            token_symbol: String::from_str(&env, "CBG"),
+            quorum_bps: 2_000,
+            proposal_threshold: 100,
+            voting_period_secs: 100,
+            timelock_secs: 10,
+        },
+    );
+
+    let mut actions = soroban_sdk::Vec::new(&env);
+    actions.push_back(String::from_str(&env, "set_fee_rate:25"));
+    let proposal_id = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Lower protocol fee"),
+        &String::from_str(&env, "Reduce taker fees via governance"),
+        &actions,
+        &500,
+    );
+
+    client.cast_vote(&voter, &proposal_id, &VoteChoice::For, &500);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 120);
+    client.execute_proposal(&proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(proposal.status, ProposalStatus::Executed);
+}
+
+#[test]
+fn test_liquidity_pool_quote_and_rewards() {
+    let (env, _, client) = setup_contract();
+    let admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    client.init(&admin);
+    let pool_id = client.create_pool(
+        &String::from_str(&env, "XLM"),
+        &String::from_str(&env, "USDC"),
+        &30,
+        &500,
+    );
+
+    let minted = client.add_liquidity(&provider, &pool_id, &10_000, &20_000);
+    let quote = client.get_pool_quote(&String::from_str(&env, "XLM"), &String::from_str(&env, "USDC"), &1_000);
+    let position = client.get_position(&pool_id, &provider);
+
+    assert!(minted > 0);
+    assert!(quote > 0);
+    assert!(position.rewards_earned > 0);
+}
+
+#[test]
+fn test_advanced_order_amendment_and_referral_tracking() {
+    let (env, _, client) = setup_contract();
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.init(&admin);
+    let expiry = env.ledger().timestamp() + 1_000;
+    let order_id = client.create_advanced_order(
+        &creator,
+        &Chain::Bitcoin,
+        &Chain::Ethereum,
+        &String::from_str(&env, "BTC"),
+        &String::from_str(&env, "ETH"),
+        &1_000,
+        &2_000,
+        &expiry,
+        &250,
+        &AdvancedOrderType::Limit,
+        &Some(crate::types::OrderExecutionCondition {
+            trigger_price_numerator: 2,
+            trigger_price_denominator: 1,
+            execute_after: env.ledger().timestamp(),
+            allow_partial_fills: true,
+        }),
+    );
+
+    client.amend_order(&creator, &order_id, &2_200, &(expiry + 100), &None);
+    let order = client.get_order(&order_id);
+    assert_eq!(order.amendment_count, 1);
+    assert_eq!(order.to_amount, 2_200);
+
+    client.register_referral_code(&owner, &String::from_str(&env, "FROST"));
+    client.record_referral_swap(&String::from_str(&env, "FROST"), &77, &10_000);
+    let referral = client.get_referral_record(&String::from_str(&env, "FROST"));
+    assert_eq!(referral.uses, 1);
+    assert_eq!(referral.rewards_earned, 100);
 }
