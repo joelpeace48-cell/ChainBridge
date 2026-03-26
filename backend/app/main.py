@@ -10,10 +10,19 @@ from app.routes import api_router
 from app.stellar import StellarClient, StellarConfig
 
 
+from app.ws.manager import ConnectionManager
+from app.routes.ws import router as ws_router
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_redis()
+    # Initialize and start WebSocket manager
+    app.state.ws_manager = ConnectionManager(get_redis())
+    app.state.ws_manager.start()
     yield
+    # Stop WebSocket manager
+    await app.state.ws_manager.stop()
     await close_redis()
 
 
@@ -35,6 +44,7 @@ app.add_middleware(
 app.add_middleware(RateLimitMiddleware)
 
 app.include_router(api_router)
+app.include_router(ws_router, prefix="/api/v1", tags=["WebSocket"])
 
 # Initialize Stellar client
 stellar_config = StellarConfig.from_env()
