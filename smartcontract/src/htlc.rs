@@ -1,10 +1,10 @@
+use crate::crypto;
 use crate::error::Error;
 use crate::storage;
-use crate::types::{HTLCStatus, HTLC};
+use crate::types::{HTLCStatus, HashAlgorithm, HTLC};
 use soroban_sdk::{Address, Bytes, BytesN, Env};
 
-const HASH_LENGTH: usize = 32; // SHA256 hash length
-
+/// Creates a new HTLC using SHA256 as the hash algorithm (default, Bitcoin-compatible).
 pub fn create_htlc(
     env: &Env,
     sender: &Address,
@@ -13,12 +13,32 @@ pub fn create_htlc(
     hash_lock: BytesN<32>,
     time_lock: u64,
 ) -> Result<u64, Error> {
+    create_htlc_with_algorithm(
+        env,
+        sender,
+        receiver,
+        amount,
+        hash_lock,
+        time_lock,
+        HashAlgorithm::SHA256,
+    )
+}
+
+/// Creates a new HTLC with an explicitly chosen hash algorithm.
+///
+/// Callers that need Ethereum-compatible swaps should pass `HashAlgorithm::Keccak256`.
+/// The `claim_htlc` call for this HTLC must use the same algorithm.
+pub fn create_htlc_with_algorithm(
+    env: &Env,
+    sender: &Address,
+    receiver: &Address,
+    amount: i128,
+    hash_lock: BytesN<32>,
+    time_lock: u64,
+    algorithm: HashAlgorithm,
+) -> Result<u64, Error> {
     if amount <= 0 {
         return Err(Error::InvalidAmount);
-    }
-
-    if hash_lock.len() != HASH_LENGTH as u32 {
-        return Err(Error::InvalidHashLength);
     }
 
     let current_time = env.ledger().timestamp();
@@ -32,17 +52,22 @@ pub fn create_htlc(
         sender: sender.clone(),
         receiver: receiver.clone(),
         amount,
-        hash_lock: hash_lock.clone(),
+        hash_lock,
         time_lock,
         status: HTLCStatus::Active,
         secret: None,
         created_at: current_time,
+        hash_algorithm: algorithm,
     };
 
     storage::write_htlc(env, htlc_id, &htlc);
     Ok(htlc_id)
 }
 
+/// Claims an HTLC by revealing the secret preimage.
+///
+/// Uses the algorithm stored in the HTLC and constant-time comparison
+/// to prevent timing-based side channel attacks.
 pub fn claim_htlc(env: &Env, htlc_id: u64, secret: Bytes) -> Result<(), Error> {
     let mut htlc = storage::read_htlc(env, htlc_id).ok_or(Error::HTLCNotFound)?;
 
@@ -55,10 +80,9 @@ pub fn claim_htlc(env: &Env, htlc_id: u64, secret: Bytes) -> Result<(), Error> {
         return Err(Error::HTLCExpired);
     }
 
-    // Verify secret matches hash
-    let computed_hash = env.crypto().sha256(&secret);
-    let computed_hash: BytesN<32> = env.crypto().sha256(&secret).into();
-    if computed_hash != htlc.hash_lock {
+    // Verify the secret preimage using constant-time comparison to prevent
+    // timing attacks. Uses the algorithm chosen when the HTLC was created.
+    if !crypto::verify_preimage(env, &secret, &htlc.hash_lock, &htlc.hash_algorithm) {
         return Err(Error::InvalidSecret);
     }
 
@@ -76,7 +100,10 @@ pub fn refund_htlc(env: &Env, htlc_id: u64, sender: &Address) -> Result<(), Erro
         return Err(Error::Unauthorized);
     }
 
-    if htlc.status != HTLCStatus::Active {
+    if htlc.status == HTLCStatus::Claimed {
+        return Err(Error::AlreadyClaimed);
+    }
+    if htlc.status == HTLCStatus::Refunded {
         return Err(Error::AlreadyRefunded);
     }
 
@@ -91,6 +118,7 @@ pub fn refund_htlc(env: &Env, htlc_id: u64, sender: &Address) -> Result<(), Erro
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn check_and_mark_expired(env: &Env, htlc_id: u64) -> Result<bool, Error> {
     let htlc = storage::read_htlc(env, htlc_id).ok_or(Error::HTLCNotFound)?;
 
@@ -107,12 +135,10 @@ pub fn check_and_mark_expired(env: &Env, htlc_id: u64) -> Result<bool, Error> {
 
 pub fn get_htlc_status(env: &Env, htlc_id: u64) -> Result<HTLCStatus, Error> {
     let htlc = storage::read_htlc(env, htlc_id).ok_or(Error::HTLCNotFound)?;
-
     Ok(htlc.status)
 }
 
 pub fn get_revealed_secret(env: &Env, htlc_id: u64) -> Result<Option<Bytes>, Error> {
     let htlc = storage::read_htlc(env, htlc_id).ok_or(Error::HTLCNotFound)?;
-
     Ok(htlc.secret)
 }

@@ -1,4 +1,6 @@
-use soroban_sdk::{Bytes, Env};
+#![allow(dead_code)]
+
+use soroban_sdk::Bytes;
 
 pub const HASH_SIZE: usize = 32;
 pub const ADDRESS_SIZE: usize = 32;

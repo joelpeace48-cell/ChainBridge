@@ -1,8 +1,29 @@
-use crate::types::{CrossChainSwap, HTLCStatus, StorageMetrics, SwapOrder, HTLC};
-use soroban_sdk::{contracttype, Address, Env};
+use crate::types::{
+    Chain, CrossChainSwap, HTLCStatus, StorageMetrics, SwapOrder, SwapStatus, HTLC,
+};
+use soroban_sdk::{contracttype, Address, Env, Vec};
+
+/// Encodes a chain-pair as a single u64 for use as a storage key.
+/// Combines from_chain and to_chain discriminants into the high and low 32 bits.
+fn chain_pair_key(from: &Chain, to: &Chain) -> u64 {
+    let from_id = chain_discriminant(from) as u64;
+    let to_id = chain_discriminant(to) as u64;
+    (from_id << 32) | to_id
+}
+
+fn chain_discriminant(chain: &Chain) -> u32 {
+    match chain {
+        Chain::Bitcoin => 0,
+        Chain::Ethereum => 1,
+        Chain::Solana => 2,
+        Chain::Polygon => 3,
+        Chain::BSC => 4,
+    }
+}
 
 #[contracttype]
 #[derive(Clone)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum DataKey {
     Admin,
     HTLCCounter,
@@ -15,6 +36,8 @@ pub enum DataKey {
     ExpiredHTLCs,
     ExpiredHTLCQueue(u64),
     StorageMetrics,
+    /// Index of open order IDs for a specific chain pair (encoded as u64).
+    ChainPairOrders(u64),
 }
 
 const CLEANUP_BATCH_SIZE: u64 = 10;
@@ -108,16 +131,19 @@ pub fn read_swap(env: &Env, swap_id: u64) -> Option<CrossChainSwap> {
     env.storage().persistent().get(&DataKey::Swap(swap_id))
 }
 
+#[allow(dead_code)]
 pub fn write_swap(env: &Env, swap_id: u64, swap: &CrossChainSwap) {
     env.storage()
         .persistent()
         .set(&DataKey::Swap(swap_id), swap);
 }
 
+#[allow(dead_code)]
 pub fn remove_swap(env: &Env, swap_id: u64) {
     env.storage().persistent().remove(&DataKey::Swap(swap_id));
 }
 
+#[allow(dead_code)]
 pub fn is_chain_supported(env: &Env, chain_id: u32) -> bool {
     env.storage()
         .persistent()
@@ -129,6 +155,54 @@ pub fn add_supported_chain(env: &Env, chain_id: u32) {
         .persistent()
         .set(&DataKey::SupportedChain(chain_id), &true);
 }
+
+// =============================================================================
+// Chain-pair order index for O(1) lookup by route
+// =============================================================================
+
+/// Add an order ID to the index for the given chain pair.
+pub fn add_order_to_chain_index(env: &Env, from: &Chain, to: &Chain, order_id: u64) {
+    let key = DataKey::ChainPairOrders(chain_pair_key(from, to));
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    ids.push_back(order_id);
+    env.storage().persistent().set(&key, &ids);
+}
+
+/// Remove an order ID from the chain-pair index when matched, cancelled, or expired.
+pub fn remove_order_from_chain_index(env: &Env, from: &Chain, to: &Chain, order_id: u64) {
+    let key = DataKey::ChainPairOrders(chain_pair_key(from, to));
+    let Some(ids) = env.storage().persistent().get::<DataKey, Vec<u64>>(&key) else {
+        return;
+    };
+    let mut updated: Vec<u64> = Vec::new(env);
+    for id in ids.iter() {
+        if id != order_id {
+            updated.push_back(id);
+        }
+    }
+    env.storage().persistent().set(&key, &updated);
+}
+
+/// Return all open order IDs for a given chain pair.
+///
+/// Callers should apply price-time priority: sort by `to_amount / from_amount`
+/// descending (best rate for the taker), breaking ties by `created_ledger`
+/// ascending (older orders first).
+pub fn get_orders_by_chain_pair(env: &Env, from: &Chain, to: &Chain) -> Vec<u64> {
+    let key = DataKey::ChainPairOrders(chain_pair_key(from, to));
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+// =============================================================================
+// Expired HTLC cleanup queue
+// =============================================================================
 
 pub fn add_expired_htlc(env: &Env, htlc_id: u64) {
     let counter = get_expired_htlc_counter(env);
@@ -208,7 +282,7 @@ pub fn get_storage_metrics(env: &Env) -> StorageMetrics {
     let mut open_orders = 0u64;
     for i in 1..=total_orders {
         if let Some(order) = read_order(env, i) {
-            if !order.matched {
+            if order.status == SwapStatus::Open {
                 open_orders += 1;
             }
         }
@@ -225,6 +299,7 @@ pub fn get_storage_metrics(env: &Env) -> StorageMetrics {
     }
 }
 
+#[allow(dead_code)]
 pub fn write_storage_metrics(env: &Env, metrics: &StorageMetrics) {
     env.storage()
         .instance()
