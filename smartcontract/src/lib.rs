@@ -1,5 +1,6 @@
 #![no_std]
 
+mod crypto;
 mod error;
 mod htlc;
 mod optimization;
@@ -8,11 +9,11 @@ mod storage;
 mod swap;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, Address, Bytes, Env, String};
+use soroban_sdk::{contract, contractimpl, Address, Bytes, BytesN, Env, String, Vec};
 
 use crate::error::Error;
 use crate::types::{
-    Chain, ChainProof, CrossChainSwap, HTLCStatus, StorageMetrics, SwapOrder, HTLC,
+    Chain, ChainProof, CrossChainSwap, HTLCStatus, HashAlgorithm, StorageMetrics, SwapOrder, HTLC,
 };
 
 #[contract]
@@ -75,6 +76,7 @@ impl ChainBridge {
     }
 
     /// Create a swap order
+    #[allow(clippy::too_many_arguments)]
     pub fn create_order(
         env: Env,
         creator: Address,
@@ -157,6 +159,86 @@ impl ChainBridge {
     pub fn mark_htlc_expired(env: Env, htlc_id: u64) -> Result<(), Error> {
         storage::add_expired_htlc(&env, htlc_id);
         Ok(())
+    }
+
+    /// Create an HTLC with an explicit hash algorithm.
+    ///
+    /// Use `HashAlgorithm::SHA256` for Bitcoin-compatible swaps and
+    /// `HashAlgorithm::Keccak256` for Ethereum-compatible swaps.
+    pub fn create_htlc_with_algo(
+        env: Env,
+        sender: Address,
+        receiver: Address,
+        amount: i128,
+        hash_lock: BytesN<32>,
+        time_lock: u64,
+        algorithm: HashAlgorithm,
+    ) -> Result<u64, Error> {
+        sender.require_auth();
+        htlc::create_htlc_with_algorithm(
+            &env, &sender, &receiver, amount, hash_lock, time_lock, algorithm,
+        )
+    }
+
+    /// Generate a cryptographically random 32-byte secret using the ledger PRNG.
+    pub fn generate_htlc_secret(env: Env) -> BytesN<32> {
+        crypto::generate_secret(&env)
+    }
+
+    /// Create a swap order with an explicit minimum fill amount.
+    ///
+    /// Setting `min_fill_amount < from_amount` enables partial fills.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_order_with_min_fill(
+        env: Env,
+        creator: Address,
+        from_chain: Chain,
+        to_chain: Chain,
+        from_asset: String,
+        to_asset: String,
+        from_amount: i128,
+        to_amount: i128,
+        expiry: u64,
+        min_fill_amount: i128,
+    ) -> Result<u64, Error> {
+        creator.require_auth();
+        order::create_order_with_min_fill(
+            &env,
+            &creator,
+            from_chain,
+            to_chain,
+            from_asset,
+            to_asset,
+            from_amount,
+            to_amount,
+            expiry,
+            min_fill_amount,
+        )
+    }
+
+    /// Partially or fully match an open order.
+    ///
+    /// `fill_amount` must be >= `min_fill_amount` and <= unfilled remainder.
+    pub fn match_order_partial(
+        env: Env,
+        counterparty: Address,
+        order_id: u64,
+        fill_amount: i128,
+    ) -> Result<u64, Error> {
+        counterparty.require_auth();
+        order::match_order_partial(&env, &counterparty, order_id, fill_amount)
+    }
+
+    /// Mark an expired open order as Expired and remove it from the index.
+    ///
+    /// Anyone may call this to clean up stale open orders after their expiry.
+    pub fn expire_order(env: Env, order_id: u64) -> Result<(), Error> {
+        order::expire_order(&env, order_id)
+    }
+
+    /// Return all open order IDs for a given chain pair.
+    pub fn get_orders_by_chain_pair(env: Env, from_chain: Chain, to_chain: Chain) -> Vec<u64> {
+        storage::get_orders_by_chain_pair(&env, &from_chain, &to_chain)
     }
 }
 
